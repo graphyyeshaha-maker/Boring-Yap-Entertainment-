@@ -17,10 +17,22 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest, Forbidden
 
+import os  # <- add this import at the top with the others
+
 # --- Konfigurasi Admin dan Database ---
-TOKEN = '8215138891:AAHW2nrTVURMQeIxpCLs0HIVkoi9jEsPivU'  # Ganti dengan Token Anda
-ADMIN_IDS = [6132898723]  # GANTI DENGAN CHAT_ID ANDA!
-DB_NAME = "yapchat_database.db"  # Nama database khusus untuk bot ini
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is required")
+
+# Bisa isi lewat env var: ADMIN_IDS="6132898723,12345678"
+_admin_env = os.getenv("ADMIN_IDS", "").strip()
+if _admin_env:
+    ADMIN_IDS = [int(x) for x in _admin_env.split(",") if x.strip().isdigit()]
+else:
+    ADMIN_IDS = [6132898723]
+
+DB_NAME = "yapchat_database.db"
+
 
 # --- Logging Setup ---
 logging.basicConfig(
