@@ -15,12 +15,19 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
+fimport os
 from telegram.error import BadRequest, Forbidden
 
 # --- Konfigurasi Admin dan Database ---
-TOKEN = '8215138891:AAHW2nrTVURMQeIxpCLs0HIVkoi9jEsPivU'  # Ganti dengan Token Anda
+TOKEN = os.getenv("BOT_TOKEN")  # ambil dari Env Var Koyeb
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is required")
+
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")  # contoh: https://namaservice.koyeb.app
+PORT = int(os.getenv("PORT", "8080"))     # Koyeb default 8080
+
 ADMIN_IDS = [6132898723]  # GANTI DENGAN CHAT_ID ANDA!
-DB_NAME = "yapchat_database.db"  # Nama database khusus untuk bot ini
+DB_NAME = "yapchat_database.db"  # SQLite akan tersimpan di disk instance
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -1094,9 +1101,26 @@ def main():
 
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, forward_message))
 
-    logger.info("Bot is running...")
-    application.run_polling()
+       logger.info("Bot is running with webhook...")
+
+    if not WEBHOOK_BASE:
+        # Di Koyeb WAJIB webhook supaya app buka port, kalau tidak health check gagal.
+        raise RuntimeError("WEBHOOK_BASE env var is required on Koyeb")
+
+    # path webhook aman: pakai kiri token (bot id) saja
+    url_path = f"/webhook/{TOKEN.split(':', 1)[0]}"
+    webhook_url = f"{WEBHOOK_BASE}{url_path}"
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=url_path,
+        webhook_url=webhook_url,
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
+
     main()
