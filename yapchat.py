@@ -1105,8 +1105,9 @@ def main():
         raise RuntimeError("WEBHOOK_BASE env var is required on Koyeb")
 
     # path webhook aman: pakai kiri token (bot id) saja
-    url_path = f"/webhook/{TOKEN.split(':', 1)[0]}"
-    webhook_url = f"{WEBHOOK_BASE}{url_path}"
+    url_path = "/"
+    webhook_url = f"{WEBHOOK_BASE}/"
+
 
     application.run_webhook(
         listen="0.0.0.0",
@@ -1121,6 +1122,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
