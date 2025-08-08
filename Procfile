@@ -1,1 +1,1 @@
-web: python -u Yapchat.py
+web: python -u yapchat.py
