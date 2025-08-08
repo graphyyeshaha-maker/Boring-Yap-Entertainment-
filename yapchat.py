@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import os
 import logging
 import sqlite3
 import asyncio
@@ -15,19 +16,12 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
-fimport os
 from telegram.error import BadRequest, Forbidden
 
 # --- Konfigurasi Admin dan Database ---
-TOKEN = os.getenv("BOT_TOKEN")  # ambil dari Env Var Koyeb
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN env var is required")
-
-WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")  # contoh: https://namaservice.koyeb.app
-PORT = int(os.getenv("PORT", "8080"))     # Koyeb default 8080
-
-ADMIN_IDS = [6132898723]  # GANTI DENGAN CHAT_ID ANDA!
-DB_NAME = "yapchat_database.db"  # SQLite akan tersimpan di disk instance
+TOKEN = os.getenv("BOT_TOKEN")  # Ambil dari Environment Variable di Koyeb
+ADMIN_IDS = [6132898723]        # GANTI DENGAN CHAT_ID ANDA!
+DB_NAME = "yapchat_database.db" # Nama database khusus untuk bot ini
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -1124,3 +1118,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
