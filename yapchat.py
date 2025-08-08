@@ -20,8 +20,11 @@ from telegram.error import BadRequest, Forbidden
 
 # --- Konfigurasi Admin dan Database ---
 TOKEN = os.getenv("BOT_TOKEN")  # Ambil dari Environment Variable di Koyeb
-ADMIN_IDS = [6132898723]        # GANTI DENGAN CHAT_ID ANDA!
-DB_NAME = "yapchat_database.db" # Nama database khusus untuk bot ini
+ADMIN_IDS = [6132898723]        # Ganti dengan chat_id admin kamu
+DB_NAME = "yapchat_database.db" # Nama database
+PORT = int(os.getenv("PORT", "8080"))
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")  # e.g. https://your-app-name.koyeb.app
+
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -1118,6 +1121,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
