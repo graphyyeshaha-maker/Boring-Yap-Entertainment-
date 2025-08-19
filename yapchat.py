@@ -2,7 +2,8 @@
 
 import os
 import logging
-import sqlite3
+import psycopg2
+from psycopg2.pool import SimpleConnectionPool
 import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -19,12 +20,63 @@ from telegram.ext import (
 from telegram.error import BadRequest, Forbidden
 
 # --- Konfigurasi Admin dan Database ---
-TOKEN = os.getenv("BOT_TOKEN")  # Ambil dari Environment Variable di Koyeb
-ADMIN_IDS = [6132898723]        # Ganti dengan chat_id admin kamu
-DB_NAME = "yapchat_database.db" # Nama database
+TOKEN = os.getenv("BOT_TOKEN")   # keep using your existing secret name
+ADMIN_IDS = [6132898723]
+DATABASE_URL = os.environ["DATABASE_URL"]  # set as a Secret in Koyeb
+POOL: SimpleConnectionPool | None = None   # tiny pool is fine for a bot
 PORT = int(os.getenv("PORT", "8080"))
-WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")  # e.g. https://your-app-name.koyeb.app
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")    # e.g. https://your-app-name.koyeb.app
 
+# --- Postgres helpers ---
+from typing import Optional
+
+def get_conn():
+    global POOL
+    if POOL is None:
+        POOL = SimpleConnectionPool(minconn=1, maxconn=5, dsn=DATABASE_URL, sslmode="require")
+    return POOL.getconn()
+
+def put_conn(conn):
+    if POOL:
+        POOL.putconn(conn)
+
+def db_exec(sql: str, params: tuple = (), commit: bool = False):
+    conn = cur = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        if commit:
+            conn.commit()
+        try:
+            return cur.fetchone()
+        except Exception:
+            return None
+    finally:
+        if cur: cur.close()
+        if conn: put_conn(conn)
+
+def db_fetchone(sql: str, params: tuple = ()):
+    conn = cur = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return cur.fetchone()
+    finally:
+        if cur: cur.close()
+        if conn: put_conn(conn)
+
+def db_fetchall(sql: str, params: tuple = ()):
+    conn = cur = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return cur.fetchall()
+    finally:
+        if cur: cur.close()
+        if conn: put_conn(conn)
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -161,93 +213,82 @@ def get_text(key: str, lang: str, **kwargs) -> str:
         lang = 'en'  # Default to English if language is not set
     return LANGUAGES.get(lang, LANGUAGES['en']).get(key, f"<{key}_not_found>").format(**kwargs)
 
-
-# --- Database Management (Refactored) ---
-def db_query(query: str, params: tuple = (), fetchone: bool = False, commit: bool = False):
-    """A centralized function to handle database operations."""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        if commit:
-            conn.commit()
-            if cursor.lastrowid:
-                return cursor.lastrowid
-            return None
-        return cursor.fetchone() if fetchone else cursor.fetchall()
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {e}\nQuery: {query}\nParams: {params}")
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-
 def setup_database():
-    """Sets up the initial database schema."""
-    logger.info("Setting up database...")
-    db_query("""
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
-            join_date TEXT, chat_count INTEGER DEFAULT 0, age INTEGER,
-            gender TEXT, language TEXT, city TEXT
-        )
-    """)
-    db_query("""
-        CREATE TABLE IF NOT EXISTS reports (
-            report_id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER,
-            reported_id INTEGER, timestamp TEXT, chat_log TEXT
-        )
-    """)
-    db_query("""
-        CREATE TABLE IF NOT EXISTS banned_users (
-            chat_id INTEGER PRIMARY KEY, reason TEXT,
-            banned_by INTEGER, timestamp TEXT
-        )
-    """)
-    # Migration for older schemas
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(users)")
-        columns = [info[1] for info in cursor.fetchall()]
-        if 'city' not in columns:
-            cursor.execute("ALTER TABLE users ADD COLUMN city TEXT")
-            conn.commit()
-            logger.info("Database migrated: Added 'city' column.")
-    except sqlite3.Error as e:
-        logger.error(f"Failed to migrate database: {e}")
-    finally:
-        if conn:
-            conn.close()
-    logger.info(f"Database '{DB_NAME}' is ready.")
+    logger.info("Postgres schema ready.")
 
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS users (
+        chat_id BIGINT PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        join_date TIMESTAMPTZ DEFAULT now(),
+        chat_count INTEGER DEFAULT 0,
+        age INTEGER,
+        gender TEXT,
+        language TEXT,
+        city TEXT
+    );
+    """, commit=True)
 
-def add_user_to_db(chat_id: int, username: str, first_name: str):
+    def add_user_to_db(chat_id: int, username: str, first_name: str):
     """Adds a new user or updates an existing one in the database."""
-    join_date = datetime.now().strftime("%d %b %Y, %H:%M")
-    if not db_query("SELECT 1 FROM users WHERE chat_id = ?", (chat_id,), fetchone=True):
-        db_query(
-            "INSERT INTO users (chat_id, username, first_name, join_date) VALUES (?, ?, ?, ?)",
-            (chat_id, username, first_name, join_date), commit=True
+    exists = db_fetchone("SELECT 1 FROM users WHERE chat_id = %s", (chat_id,))
+    if not exists:
+        db_exec(
+            "INSERT INTO users (chat_id, username, first_name, join_date) VALUES (%s, %s, %s, now())",
+            (chat_id, username, first_name), commit=True
         )
     else:
-        db_query(
-            "UPDATE users SET username = ?, first_name = ? WHERE chat_id = ?",
+        db_exec(
+            "UPDATE users SET username = %s, first_name = %s WHERE chat_id = %s",
+            (username, first_name, chat_id), commit=True
+        )
+
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS reports (
+        report_id BIGSERIAL PRIMARY KEY,
+        reporter_id BIGINT,
+        reported_id BIGINT,
+        timestamp TIMESTAMPTZ DEFAULT now(),
+        chat_log TEXT
+    );
+    """, commit=True)
+
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS banned_users (
+        chat_id BIGINT PRIMARY KEY,
+        reason TEXT,
+        banned_by BIGINT,
+        timestamp TIMESTAMPTZ DEFAULT now()
+    );
+    """, commit=True)
+
+    logger.info("Postgres schema ready.")
+
+    exists = db_fetchone("SELECT 1 FROM users WHERE chat_id = %s", (chat_id,))
+    if not exists:
+        db_exec(
+            "INSERT INTO users (chat_id, username, first_name, join_date) VALUES (%s, %s, %s, now())",
+            (chat_id, username, first_name), commit=True
+        )
+    else:
+        db_exec(
+            "UPDATE users SET username = %s, first_name = %s WHERE chat_id = %s",
             (username, first_name, chat_id), commit=True
         )
 
 
+
 def get_user_data(user_id: int) -> tuple:
     """Fetches a user's profile (age, gender, language) from the database."""
-    result = db_query("SELECT age, gender, language FROM users WHERE chat_id = ?", (user_id,), fetchone=True)
+    result = db_fetchone("SELECT age, gender, language FROM users WHERE chat_id = %s", (user_id,))
     return result if result else (None, None, None)
 
 
 def is_user_banned(chat_id: int) -> bool:
     """Checks if a user is in the banned list."""
-    return db_query("SELECT 1 FROM banned_users WHERE chat_id = ?", (chat_id,), fetchone=True) is not None
+    return db_fetchone("SELECT 1 FROM banned_users WHERE chat_id = %s", (chat_id,)) is not None
+
 
 
 # --- Helper Functions & Keyboards ---
@@ -320,7 +361,7 @@ async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = query.from_user.id
     await query.answer()
 
-    db_query("UPDATE users SET language = ? WHERE chat_id = ?", (lang, user_id), commit=True)
+    db_exec("UPDATE users SET language = %s WHERE chat_id = %s", (lang, user_id), commit=True)
     context.user_data['lang'] = lang
     await query.edit_message_text(text=get_text('ask_age', lang))
     return GET_AGE
@@ -364,11 +405,12 @@ async def get_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_age = context.user_data['age']
     user_gender = context.user_data['gender']
 
-    db_query(
-        "UPDATE users SET age = ?, gender = ?, city = ? WHERE chat_id = ?",
-        (user_age, user_gender, user_city, user_id),
-        commit=True
+    db_exec(
+    "UPDATE users SET age = %s, gender = %s, city = %s WHERE chat_id = %s",
+    (user_age, user_gender, user_city, user_id),
+    commit=True
     )
+
 
     await update.message.reply_text(get_text('profile_complete', lang))
     await show_main_menu(update, context, lang)
@@ -469,8 +511,9 @@ async def find_partner(user_id, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(user2_id, msg2, parse_mode="Markdown",
                                            reply_markup=get_chat_controls(user2_lang))
 
-            db_query("UPDATE users SET chat_count = chat_count + 1 WHERE chat_id IN (?, ?)", (user1_id, user2_id),
-                     commit=True)
+            db_exec("UPDATE users SET chat_count = chat_count + 1 WHERE chat_id IN (%s, %s)",
+                     (user1_id, user2_id), commit=True)
+
             logger.info(f"Partner found: {user1_id} <-> {user2_id}")
 
         except (Forbidden, BadRequest) as e:
@@ -726,12 +769,13 @@ async def get_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     waiting_users = context.bot_data.get('waiting_users', set())
 
     # Fetch all users from the database
-    all_users_data = db_query("""
-        SELECT u.chat_id, u.username, u.first_name, u.join_date, u.chat_count,
-               u.age, u.gender, u.city, b.chat_id IS NOT NULL AS is_banned
-        FROM users u LEFT JOIN banned_users b ON u.chat_id = b.chat_id
-        ORDER BY u.join_date DESC
-    """)
+    all_users_data = db_fetchall("""
+       SELECT u.chat_id, u.username, u.first_name, u.join_date, u.chat_count,
+              u.age, u.gender, u.city, (b.chat_id IS NOT NULL) AS is_banned
+       FROM users u LEFT JOIN banned_users b ON u.chat_id = b.chat_id
+       ORDER BY u.join_date DESC
+   """)
+
     if not all_users_data:
         await update.message.reply_text("No users found in the database.")
         return
@@ -810,10 +854,15 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("User ID must be a number.")
         return
 
-    db_query(
-        "INSERT OR REPLACE INTO banned_users (chat_id, reason, banned_by, timestamp) VALUES (?, ?, ?, ?)",
-        (user_to_ban_id, reason, update.effective_user.id, datetime.now().isoformat()),
-        commit=True
+   db_exec("""
+   INSERT INTO banned_users (chat_id, reason, banned_by, timestamp)
+   VALUES (%s, %s, %s, now())
+   ON CONFLICT (chat_id) DO UPDATE
+   SET reason = EXCLUDED.reason,
+       banned_by = EXCLUDED.banned_by,
+       timestamp = now();
+   """, (user_to_ban_id, reason, update.effective_user.id), commit=True)
+
     )
     await update.message.reply_text(f"✅ User {user_to_ban_id} has been successfully banned.")
     try:
@@ -847,8 +896,8 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_text('unban_not_banned', admin_lang, user_id=user_to_unban_id))
         return
 
-    db_query("DELETE FROM banned_users WHERE chat_id = ?", (user_to_unban_id,), commit=True)
-    await update.message.reply_text(get_text('unban_success', admin_lang, user_id=user_to_unban_id))
+    db_exec("DELETE FROM banned_users WHERE chat_id = %s", (user_to_unban_id,), commit=True)
+
 
     try:
         notification_text = get_text('unbanned_notification', 'en') + "\n\n" + get_text('unbanned_notification', 'id')
@@ -866,7 +915,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /broadcast <message>")
         return
 
-    all_users = db_query("SELECT chat_id, language FROM users")
+    all_users = db_fetchall("SELECT chat_id, language FROM users")
     if not all_users:
         await update.message.reply_text("No users to broadcast to.")
         return
@@ -907,7 +956,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
 
-    total_users = db_query("SELECT COUNT(chat_id) FROM users", fetchone=True)[0]
+    total_users = db_fetchone("SELECT COUNT(chat_id) FROM users")[0]
     active_user_count = len(context.bot_data['active_chats'])
     waiting_user_count = len(context.bot_data['waiting_users'])
 
@@ -1122,6 +1171,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
